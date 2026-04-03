@@ -1,0 +1,3 @@
+/home/ubuntu/桌面/gnn-cda-diagnosis-main/.venv/bin/python astar_search.py --circuit c6288 --num_faults 5 --timeout_seconds 10 --gnn_only --seed 42
+
+/home/ubuntu/桌面/gnn-cda-diagnosis-main/.venv/bin/python run_safari.py --circuit c7552 --num_faults 1 --n 4 --m 8 --trials 3 --sat_backend pysat --summary_only

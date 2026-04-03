@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+venv/
+*.pyc
+.vscode/
+safari_layout.txt
+safari.txt
