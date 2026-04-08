@@ -4,6 +4,7 @@ import time
 import os
 import heapq
 import math
+from itertools import product
 import numpy as np
 from circuit_gnn_converter import convert_to_pyg_data
 from circuit_simulator import CircuitSimulator
@@ -36,7 +37,16 @@ class GNNCdaDiagnosis:
                 self.output_ancestors[node] = set()
         return self.output_ancestors[node]
 
-    def diagnose(self, input_values, observed_values, max_faults=20, max_steps=1000, use_gnn=True, max_time_seconds=180):
+    def diagnose(
+        self,
+        input_values,
+        observed_values,
+        max_faults=20,
+        max_steps=1000,
+        use_gnn=True,
+        max_time_seconds=180,
+        fault_semantics='strong',
+    ):
         """
         Performs GNN-Guided Conflict-Directed A* Search.
         """
@@ -67,6 +77,46 @@ class GNNCdaDiagnosis:
         if max_time_seconds is not None and max_time_seconds > 0:
             search_deadline = search_start_time + max_time_seconds
 
+        def is_consistent(sim_vals):
+            for node, obs_val in observed_values.items():
+                if node in sim_vals and sim_vals[node] != obs_val:
+                    return False
+            return True
+
+        def weak_witness_assignment(fault_nodes):
+            if not fault_nodes:
+                sim_vals = self.simulator.simulate(input_values, fault=None)
+                return [] if is_consistent(sim_vals) else None
+
+            for values in product([0, 1], repeat=len(fault_nodes)):
+                candidate = list(zip(fault_nodes, values))
+                sim_vals = self.simulator.simulate(input_values, fault=candidate)
+                if is_consistent(sim_vals):
+                    return candidate
+            return None
+
+        def weak_best_mismatches(fault_nodes):
+            if not fault_nodes:
+                sim_vals = self.simulator.simulate(input_values, fault=None)
+                return [
+                    node for node, obs_val in observed_values.items()
+                    if node in sim_vals and sim_vals[node] != obs_val
+                ]
+
+            best = None
+            for values in product([0, 1], repeat=len(fault_nodes)):
+                candidate = list(zip(fault_nodes, values))
+                sim_vals = self.simulator.simulate(input_values, fault=candidate)
+                mismatches = [
+                    node for node, obs_val in observed_values.items()
+                    if node in sim_vals and sim_vals[node] != obs_val
+                ]
+                if best is None or len(mismatches) < len(best):
+                    best = mismatches
+                    if not best:
+                        break
+            return best if best is not None else []
+
         def run_search(active_score_map, deadline, branch_limit):
             # Priority Queue: (cost, num_faults, fault_set_tuple)
             # cost = sum(-log(P(node))) for nodes in fault_set
@@ -82,27 +132,44 @@ class GNNCdaDiagnosis:
                 if max_steps is not None and steps >= max_steps:
                     return None, steps
 
-                cost, _, current_faults = heapq.heappop(open_set)
+                cost, _, current_state = heapq.heappop(open_set)
 
-                if current_faults in visited:
+                if current_state in visited:
                     continue
-                visited.add(current_faults)
+                visited.add(current_state)
                 steps += 1
 
-                # Simulate
-                sim_vals = self.simulator.simulate(input_values, fault=list(current_faults))
+                if fault_semantics == 'weak':
+                    current_fault_nodes = current_state
+                    witness = weak_witness_assignment(list(current_fault_nodes))
+                    if witness is not None:
+                        return list(current_fault_nodes), steps
 
-                # Check Consistency & Identify Mismatches
-                mismatches = []
-                for node, obs_val in observed_values.items():
-                    if node in sim_vals and sim_vals[node] != obs_val:
-                        mismatches.append(node)
+                    # Expand using mismatches from the least-conflicting value assignment.
+                    mismatches = weak_best_mismatches(list(current_fault_nodes))
+                    existing_fault_nodes = set(current_fault_nodes)
+                else:
+                    current_faults = current_state
+
+                    # Simulate
+                    sim_vals = self.simulator.simulate(input_values, fault=list(current_faults))
+
+                    # Check Consistency & Identify Mismatches
+                    mismatches = []
+                    for node, obs_val in observed_values.items():
+                        if node in sim_vals and sim_vals[node] != obs_val:
+                            mismatches.append(node)
+
+                    if not mismatches:
+                        return list(current_faults), steps
+
+                    existing_fault_nodes = {f[0] for f in current_faults}
 
                 if not mismatches:
-                    return list(current_faults), steps
+                    return None, steps
 
                 # Pruning: Max faults reached
-                if len(current_faults) >= max_faults:
+                if len(existing_fault_nodes) >= max_faults:
                     continue
 
                 # CDA Step: Pick a mismatch and expand its ancestors
@@ -110,8 +177,7 @@ class GNNCdaDiagnosis:
                 best_mismatch = min(mismatches, key=lambda n: len(self.get_ancestors(n)))
                 candidates = self.get_ancestors(best_mismatch)
 
-                # Filter candidates: must not be already in current_faults
-                existing_fault_nodes = {f[0] for f in current_faults}
+                # Filter candidates: must not be already in current state
                 valid_candidates = [n for n in candidates if n not in existing_fault_nodes]
 
                 # Sort by score descending (Try most likely first)
@@ -125,24 +191,41 @@ class GNNCdaDiagnosis:
                     # Cost update: Add -log(P) of the new fault
                     step_cost = -math.log(node_score)
 
-                    for val in [0, 1]:
-                        new_fault = (node, val)
-                        # Sort to ensure uniqueness of tuple
-                        new_faults = tuple(sorted(current_faults + (new_fault,)))
-
-                        if new_faults not in visited:
+                    if fault_semantics == 'weak':
+                        new_nodes = tuple(sorted(current_state + (node,)))
+                        if new_nodes not in visited:
                             new_total_cost = cost + step_cost
-                            heapq.heappush(open_set, (new_total_cost, len(new_faults), new_faults))
+                            heapq.heappush(open_set, (new_total_cost, len(new_nodes), new_nodes))
+                    else:
+                        for val in [0, 1]:
+                            new_fault = (node, val)
+                            # Sort to ensure uniqueness of tuple
+                            new_faults = tuple(sorted(current_state + (new_fault,)))
+
+                            if new_faults not in visited:
+                                new_total_cost = cost + step_cost
+                                heapq.heappush(open_set, (new_total_cost, len(new_faults), new_faults))
 
             return None, steps
 
         # 2. A* Search Execution (time-bound only)
         return run_search(score_map, search_deadline, 20)
 
-def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_samples=20, num_injected_faults=2, timeout_seconds=180, gnn_only=False):
+def evaluate_astar_performance(
+    circuit_name,
+    bench_path,
+    gnn_model,
+    num_test_samples=20,
+    num_injected_faults=2,
+    timeout_seconds=180,
+    gnn_only=False,
+    fault_semantics='strong',
+):
     from circuit_gnn_converter import parse_bench_to_networkx
     
-    print(f"\nEvaluating GNN-CDA Performance on {circuit_name} ({num_injected_faults} Faults)...")
+    print(
+        f"\nEvaluating GNN-CDA Performance on {circuit_name} ({num_injected_faults} Faults, semantics={fault_semantics})..."
+    )
     
     G = parse_bench_to_networkx(bench_path)
     simulator = CircuitSimulator(G)
@@ -223,15 +306,35 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             'observed': observed,
             'true_faults': true_faults
         })
+
+    def fault_hit_rate(pred_faults, true_faults):
+        if pred_faults is None:
+            return 0.0
+        if fault_semantics == 'weak':
+            pred_nodes = set(pred_faults)
+            if not pred_nodes:
+                return 0.0
+            true_nodes = {node for node, _ in true_faults}
+            if not true_nodes:
+                return 0.0
+            return len(true_nodes & pred_nodes) / len(pred_nodes)
+
+        pred_set = set(pred_faults)
+        if not pred_set:
+            return 0.0
+        true_set = set(true_faults)
+        if not true_set:
+            return 0.0
+        return len(true_set & pred_set) / len(pred_set)
         
     if gnn_only:
         print(
-            f"{'Case':<5} | {'True Faults':<25} | {'GNN Steps':<10} | {'GNN Card':<9} | {'GNN Time':<9} | {'GNN Res':<8} | {'Pred Faults':<25}"
+            f"{'Case':<5} | {'True Faults':<25} | {'GNN Steps':<10} | {'GNN Card':<9} | {'GNN Time':<9} | {'GNN Res':<8} | {'HitRate':<8} | {'Pred Faults':<25}"
         )
     else:
         print(
             f"{'Case':<5} | {'True Faults':<25} | {'GNN Steps':<10} | {'GNN Card':<9} | {'GNN Time':<9} | "
-            f"{'Base Steps':<10} | {'Base Card':<9} | {'Base Time':<9} | {'GNN Res':<8} | {'Base Res':<8} | {'Pred Faults':<25}"
+            f"{'Base Steps':<10} | {'Base Card':<9} | {'Base Time':<9} | {'GNN Res':<8} | {'Base Res':<8} | {'HitRate':<8} | {'Pred Faults':<25}"
         )
     print("-" * 150)
     
@@ -253,6 +356,7 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             max_faults=num_injected_faults, # Allow up to the number of injected faults
             use_gnn=True,
             max_time_seconds=timeout_seconds,
+            fault_semantics=fault_semantics,
         )
         t_gnn = time.time() - start_t
         
@@ -268,6 +372,7 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
                 max_faults=num_injected_faults, 
                 use_gnn=False,
                 max_time_seconds=timeout_seconds,
+                fault_semantics=fault_semantics,
             )
             t_base = time.time() - start_t
 
@@ -291,7 +396,9 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             base_cards.append(len(pred_base))
         
         true_str = str(case['true_faults'])
-        pred_str = str(pred_gnn) if pred_gnn is not None else (str(pred_base) if pred_base is not None else "None")
+        selected_pred = pred_gnn if pred_gnn is not None else pred_base
+        pred_str = str(selected_pred) if selected_pred is not None else "None"
+        hit_rate = fault_hit_rate(selected_pred, case['true_faults'])
         
         # Truncate long strings just for display
         if len(true_str) > 24:
@@ -301,12 +408,12 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             
         if gnn_only:
             print(
-                f"{i:<5} | {true_str:<25} | {steps_gnn:<10} | {gnn_card!s:<9} | {t_gnn:<8.3f}s | {res_gnn:<8} | {pred_str:<25}"
+                f"{i:<5} | {true_str:<25} | {steps_gnn:<10} | {gnn_card!s:<9} | {t_gnn:<8.3f}s | {res_gnn:<8} | {hit_rate:<8.2%} | {pred_str:<25}"
             )
         else:
             print(
                 f"{i:<5} | {true_str:<25} | {steps_gnn:<10} | {gnn_card!s:<9} | {t_gnn:<8.3f}s | "
-                f"{steps_base:<10} | {base_card!s:<9} | {t_base:<8.3f}s | {res_gnn:<8} | {res_base:<8} | {pred_str:<25}"
+                f"{steps_base:<10} | {base_card!s:<9} | {t_base:<8.3f}s | {res_gnn:<8} | {res_base:<8} | {hit_rate:<8.2%} | {pred_str:<25}"
             )
         
     print("-" * 150)
@@ -343,6 +450,13 @@ def main():
     parser.add_argument('--seed', type=int, default=8, help='Fixed random seed for reproducible experiments')
     parser.add_argument('--eval_seed', type=int, default=None, help='Optional seed for evaluation cases; defaults to --seed')
     parser.add_argument('--gnn_only', action='store_true', help='Only run GNN-CDA and skip Base-CDA evaluation')
+    parser.add_argument(
+        '--fault_semantics',
+        type=str,
+        default='strong',
+        choices=['strong', 'weak'],
+        help='Fault semantics for search consistency check: strong or weak',
+    )
     args = parser.parse_args()
 
     def pick_training_profile(num_nodes, requested_fault_counts):
@@ -351,7 +465,7 @@ def main():
         probs = None
 
         if num_nodes > 2000:
-            num_samples = 5000
+            num_samples = 1000
             size_label = "Large"
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10, 20]
@@ -466,6 +580,7 @@ def main():
         num_injected_faults=args.num_faults,
         timeout_seconds=args.timeout_seconds,
         gnn_only=args.gnn_only,
+        fault_semantics=args.fault_semantics,
     )
 
 if __name__ == "__main__":
