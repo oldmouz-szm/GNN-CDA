@@ -237,15 +237,16 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
         return len(true_set.intersection(pred_set)) / len(pred_set)
         
     if gnn_only:
-        print(
+        header = (
             f"{'Case':<5} | {'True Faults':<25} | {'GNN Steps':<10} | {'GNN Card':<9} | {'GNN Time':<9} | {'GNN Res':<8} | {'HitRate':<8} | {'Pred Faults':<25}"
         )
     else:
-        print(
+        header = (
             f"{'Case':<5} | {'True Faults':<25} | {'GNN Steps':<10} | {'GNN Card':<9} | {'GNN Time':<9} | "
             f"{'Base Steps':<10} | {'Base Card':<9} | {'Base Time':<9} | {'GNN Res':<8} | {'Base Res':<8} | {'HitRate':<8} | {'Pred Faults':<25}"
         )
-    print("-" * 150)
+    print(header)
+    print("-" * len(header))
     
     gnn_total_steps = 0
     base_total_steps = 0
@@ -257,7 +258,7 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
     base_cards = []
     hit_rates = []
     
-    for i, case in enumerate(test_cases):
+    for i, case in enumerate(test_cases, start=1):
         # Run GNN-CDA
         start_t = time.time()
         pred_gnn, steps_gnn = searcher.diagnose(
@@ -327,7 +328,7 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
                 f"{steps_base:<10} | {base_card!s:<9} | {t_base:<8.3f}s | {res_gnn:<8} | {res_base:<8} | {hit_rate_str:<8} | {pred_str:<25}"
             )
         
-    print("-" * 150)
+    print("-" * len(header))
     gnn_avg_card = (sum(gnn_cards) / len(gnn_cards)) if gnn_cards else 0.0
     base_avg_card = (sum(base_cards) / len(base_cards)) if base_cards else 0.0
     avg_hit = (sum(hit_rates) / len(hit_rates)) if hit_rates else 0.0
