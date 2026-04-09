@@ -363,6 +363,8 @@ def main():
     parser.add_argument('--timeout_seconds', type=int, default=180, help='Timeout per diagnosis case in seconds')
     parser.add_argument('--seed', type=int, default=8, help='Fixed random seed for reproducible experiments')
     parser.add_argument('--eval_seed', type=int, default=None, help='Optional seed for evaluation cases; defaults to --seed')
+    parser.add_argument('--bench_path', type=str, default=None,
+                        help='Full path to .bench file. If not given, searches iscas85/bench and ITC99 directories.')
     parser.add_argument('--gnn_only', action='store_true', help='Only run GNN-CDA and skip Base-CDA evaluation')
     args = parser.parse_args()
 
@@ -371,24 +373,36 @@ def main():
         counts = requested_fault_counts
         probs = None
 
-        if num_nodes > 2000:
+        if num_nodes > 10000:
+            num_samples = 8000
+            size_label = "Huge"
+            if counts == [1, 2]:
+                counts = [1, 2, 5, 10, 20, 50]
+                probs = [0.25, 0.2, 0.2, 0.15, 0.12, 0.08]
+        elif num_nodes > 2000:
             num_samples = 5000
             size_label = "Large"
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10, 20]
                 probs = [0.3, 0.25, 0.2, 0.15, 0.1]
-        elif num_nodes > 1000:
-            num_samples = 800
+        elif num_nodes > 500:
+            num_samples = 1000
             size_label = "Medium"
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10]
-                probs = [0.4, 0.3, 0.2, 0.1]
-        else:
+                probs = [0.35, 0.3, 0.2, 0.15]
+        elif num_nodes > 50:
             num_samples = 500
             size_label = "Small"
             if counts == [1, 2]:
-                counts = [1, 2, 5, 10]
+                counts = [1, 2, 3, 5]
                 probs = [0.4, 0.3, 0.2, 0.1]
+        else:
+            num_samples = 200
+            size_label = "Tiny"
+            if counts == [1, 2]:
+                counts = [1, 2, 3]
+                probs = [0.5, 0.35, 0.15]
 
         return num_samples, counts, probs, size_label
 
@@ -409,11 +423,23 @@ def main():
     
     circuit_name = args.circuit
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    bench_path = os.path.join(base_dir, "iscas85", "bench", f"{circuit_name}.bench")
     
-    if not os.path.exists(bench_path):
-        print(f"Error: Circuit file not found at {bench_path}")
-        exit(1)
+    if args.bench_path:
+        bench_path = args.bench_path
+    else:
+        search_dirs = [
+            os.path.join(base_dir, "iscas85", "bench"),
+            os.path.join(base_dir, "ITC99"),
+        ]
+        bench_path = None
+        for d in search_dirs:
+            candidate = os.path.join(d, f"{circuit_name}.bench")
+            if os.path.exists(candidate):
+                bench_path = candidate
+                break
+        if bench_path is None:
+            print(f"Error: Circuit file not found. Searched: {search_dirs}")
+            exit(1)
 
     # Setup Model Path
     model_dir = "models"
