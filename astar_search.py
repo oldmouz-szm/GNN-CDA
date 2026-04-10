@@ -360,21 +360,21 @@ def main():
                 counts = [1, 2, 5, 10, 20, 50]
                 probs = [0.25, 0.2, 0.2, 0.15, 0.12, 0.08]
         elif num_nodes > 500:
-            num_samples = 1000
+            num_samples = 2000
             size_label = "Medium"
             epochs = 30
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10, 20]
                 probs = [0.3, 0.25, 0.2, 0.15, 0.1]
         elif num_nodes > 50:
-            num_samples = 500
+            num_samples = 1000
             size_label = "Small"
             epochs = 25
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10]
                 probs = [0.35, 0.3, 0.2, 0.15]
         else:
-            num_samples = 200
+            num_samples = 500
             size_label = "Tiny"
             epochs = 20
             if counts == [1, 2]:
