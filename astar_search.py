@@ -36,7 +36,7 @@ class GNNCdaDiagnosis:
                 self.output_ancestors[node] = set()
         return self.output_ancestors[node]
 
-    def diagnose(self, input_values, observed_values, max_faults=20, max_steps=1000, use_gnn=True, max_time_seconds=180):
+    def diagnose(self, input_values, observed_values, max_faults=20, max_steps=99999, use_gnn=True, max_time_seconds=180):
         """
         Performs GNN-Guided Conflict-Directed A* Search.
         """
@@ -154,25 +154,8 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
         return (0, int(s)) if s.isdigit() else (1, s)
 
     output_nodes = sorted([n for n in G.nodes() if G.out_degree(n) == 0], key=_node_sort_key)
-    input_nodes = sorted(simulator.input_nodes, key=_node_sort_key)
     obs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "obs")
     os.makedirs(obs_dir, exist_ok=True)
-
-    # Cross-project bridge artifacts for OOE-style experiments.
-    ooe_obs_path = os.path.join(obs_dir, f"{circuit_name}_iscas85.obs")
-    ooe_map_path = os.path.join(obs_dir, f"{circuit_name}_io_map.txt")
-    with open(ooe_map_path, "w", encoding="utf-8") as f:
-        f.write("# Auto-generated I/O mapping for OOE comparison\n")
-        f.write("# i-index to real input node\n")
-        for i, node in enumerate(input_nodes, start=1):
-            f.write(f"i{i}={node}\n")
-        f.write("# o-index to real output node\n")
-        for i, node in enumerate(output_nodes, start=1):
-            f.write(f"o{i}={node}\n")
-
-    # Rewrite the file on each run so observation indices always match this run's cases.
-    with open(ooe_obs_path, "w", encoding="utf-8") as f:
-        f.write("")
     
     # Generate Test Cases
     test_cases = []
@@ -205,18 +188,6 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             f.write("# outputs\n")
             for node in output_nodes:
                 f.write(f"{node}={observed.get(node, 0)}\n")
-
-        # Save OOE-style observation line: (circuit,idx,[i1,-i2,...,o1,-o2,...]).
-        io_literals = []
-        for i, node in enumerate(input_nodes, start=1):
-            val = input_vec.get(node, 0)
-            io_literals.append(f"i{i}" if val == 1 else f"-i{i}")
-        for i, node in enumerate(output_nodes, start=1):
-            val = observed.get(node, 0)
-            io_literals.append(f"o{i}" if val == 1 else f"-o{i}")
-
-        with open(ooe_obs_path, "a", encoding="utf-8") as f:
-            f.write(f"({circuit_name},{case_idx + 1},[{','.join(io_literals)}]).\n")
         
         test_cases.append({
             'input': input_vec,
@@ -369,42 +340,48 @@ def main():
     args = parser.parse_args()
 
     def pick_training_profile(num_nodes, requested_fault_counts):
-        """Returns (num_samples, fault_counts, fault_probs, size_label)."""
+        """Returns (num_samples, fault_counts, fault_probs, size_label, num_epochs)."""
         counts = requested_fault_counts
         probs = None
+        epochs = 20
 
         if num_nodes > 10000:
-            num_samples = 8000
+            num_samples = 50
             size_label = "Huge"
+            epochs = 50
             if counts == [1, 2]:
                 counts = [1, 2, 5, 10, 20, 50]
                 probs = [0.25, 0.2, 0.2, 0.15, 0.12, 0.08]
         elif num_nodes > 2000:
             num_samples = 5000
             size_label = "Large"
+            epochs = 40
             if counts == [1, 2]:
-                counts = [1, 2, 5, 10, 20]
-                probs = [0.3, 0.25, 0.2, 0.15, 0.1]
+                counts = [1, 2, 5, 10, 20, 50]
+                probs = [0.25, 0.2, 0.2, 0.15, 0.12, 0.08]
         elif num_nodes > 500:
             num_samples = 1000
             size_label = "Medium"
+            epochs = 30
             if counts == [1, 2]:
-                counts = [1, 2, 5, 10]
-                probs = [0.35, 0.3, 0.2, 0.15]
+                counts = [1, 2, 5, 10, 20]
+                probs = [0.3, 0.25, 0.2, 0.15, 0.1]
         elif num_nodes > 50:
             num_samples = 500
             size_label = "Small"
+            epochs = 25
             if counts == [1, 2]:
-                counts = [1, 2, 3, 5]
-                probs = [0.4, 0.3, 0.2, 0.1]
+                counts = [1, 2, 5, 10]
+                probs = [0.35, 0.3, 0.2, 0.15]
         else:
             num_samples = 200
             size_label = "Tiny"
+            epochs = 20
             if counts == [1, 2]:
-                counts = [1, 2, 3]
-                probs = [0.5, 0.35, 0.15]
+                counts = [1, 2, 5, 10]
+                probs = [0.4, 0.3, 0.2, 0.1]
 
-        return num_samples, counts, probs, size_label
+        return num_samples, counts, probs, size_label, epochs
 
     set_seed(args.seed)
     eval_seed = args.seed if args.eval_seed is None else args.eval_seed
@@ -468,11 +445,11 @@ def main():
     if should_train:
         print(f"Training model for {circuit_name}...")
         num_nodes = len(G.nodes())
-        num_samples, train_fault_counts, train_fault_probs, size_label = pick_training_profile(
+        num_samples, train_fault_counts, train_fault_probs, size_label, num_epochs = pick_training_profile(
             num_nodes,
             train_fault_counts,
         )
-        print(f"{size_label} circuit detected ({num_nodes} nodes). Using {num_samples} training samples.")
+        print(f"{size_label} circuit detected ({num_nodes} nodes). Using {num_samples} training samples, {num_epochs} epochs.")
         print(f"Training fault counts: {train_fault_counts}")
         if train_fault_probs is not None:
             print(f"Training fault probs: {train_fault_probs}")
@@ -495,7 +472,7 @@ def main():
         criterion = torch.nn.BCELoss()
         
         model.train()
-        for epoch in range(20):
+        for epoch in range(num_epochs):
             train(model, loader, optimizer, criterion, 'cpu')
             
         # Save the model
