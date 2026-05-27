@@ -36,7 +36,7 @@ class GNNCdaDiagnosis:
                 self.output_ancestors[node] = set()
         return self.output_ancestors[node]
 
-    def diagnose(self, input_values, observed_values, max_faults=20, max_steps=99999, use_gnn=True, max_time_seconds=180):
+    def diagnose(self, input_values, observed_values, use_gnn=True, max_time_seconds=180):
         """
         Performs GNN-Guided Conflict-Directed A* Search.
         """
@@ -79,8 +79,6 @@ class GNNCdaDiagnosis:
             while open_set:
                 if deadline is not None and time.time() >= deadline:
                     return None, steps
-                if max_steps is not None and steps >= max_steps:
-                    return None, steps
 
                 cost, _, current_faults = heapq.heappop(open_set)
 
@@ -100,10 +98,6 @@ class GNNCdaDiagnosis:
 
                 if not mismatches:
                     return list(current_faults), steps
-
-                # Pruning: Max faults reached
-                if len(current_faults) >= max_faults:
-                    continue
 
                 # CDA Step: Pick a mismatch and expand its ancestors
                 # Heuristic: Pick mismatch with smallest cone (fewest candidates) to minimize branching
@@ -235,7 +229,6 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
         pred_gnn, steps_gnn = searcher.diagnose(
             case['input'], 
             case['observed'], 
-            max_faults=num_injected_faults, # Allow up to the number of injected faults
             use_gnn=True,
             max_time_seconds=timeout_seconds,
         )
@@ -250,7 +243,6 @@ def evaluate_astar_performance(circuit_name, bench_path, gnn_model, num_test_sam
             pred_base, steps_base = searcher.diagnose(
                 case['input'], 
                 case['observed'], 
-                max_faults=num_injected_faults, 
                 use_gnn=False,
                 max_time_seconds=timeout_seconds,
             )
